@@ -328,6 +328,11 @@
 #define MAP_SIZE_POW2       16
 #define MAP_SIZE            (1 << MAP_SIZE_POW2)
 
+
+/* Map size for the max count.*/
+#define MAX_SIZE_POW2      16
+#define MAX_SIZE           (1 << MAX_SIZE_POW2)
+
 /* Maximum allocator request size (keep well under INT_MAX): */
 
 #define MAX_ALLOC           0x40000000

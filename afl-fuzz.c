@@ -136,7 +136,8 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
            deferred_mode,             /* Deferred forkserver mode?        */
-           fast_cal;                  /* Try to calibrate faster?         */
+           max_count_mode,            /* Max counts mode?                 */
+           fast_cal;                  /* Try to calibrate faster?
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -153,6 +154,10 @@ EXP_ST u8* trace_bits;                /* SHM with instrumentation bitmap  */
 EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
+
+EXP_ST u32* max_bits;                 /* new SHM with instrumentation bitmap  */
+
+EXP_ST u32 max_counts[MAX_SIZE];      /* Bits we haven't seen in maxcount */
 
 static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
 
@@ -253,7 +258,8 @@ struct queue_entry {
       fs_redundant;                   /* Marked as redundant in the fs?   */
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
-      exec_cksum;                     /* Checksum of the execution trace  */
+      exec_cksum,                     /* Checksum of the execution trace  */
+      max_count_cksum;                /* Checksum of the max counts trace */
 
   u64 exec_us,                        /* Execution time (us)              */
       handicap,                       /* Number of queue cycles behind    */
@@ -855,6 +861,35 @@ EXP_ST void destroy_queue(void) {
 
 }
 
+void DEBUG (char const *fmt, ...) {
+    static FILE *f = NULL;
+    if (f == NULL) {
+      // dynamic memory allocation 
+      u8 * fn = alloc_printf("%s/max-ct-fuzzing.log", out_dir);
+      f= fopen(fn, "w");
+      ck_free(fn);
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+}
+
+static inline u8 update_max_count(){
+  int ret = 0;
+  for (int i = 0; i < MAX_SIZE; i++){
+      if (unlikely(max_bits[i])){
+        if (unlikely(max_bits[i] > max_counts[i])) {
+           ret = 1;
+           DEBUG("New max(0x%04x) = %u (earlier was: %u)\n ", i, max_bits[i], max_counts[i]);
+     max_counts[i] = max_bits[i];
+        }
+      }
+  }
+  
+  return ret;
+}
+
 
 /* Write bitmap to file. The bitmap is useful mostly for the secret
    -B option, to focus a separate fuzzing session on a particular
@@ -1262,6 +1297,7 @@ static void minimize_bits(u8* dst, u8* src) {
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
 
+// 1. maintain a top_rating[] array for each byte set in trace_bits[].
 static void update_bitmap_score(struct queue_entry* q) {
 
   u32 i;
@@ -1394,7 +1430,10 @@ EXP_ST void setup_shm(void) {
 
   ck_free(shm_str);
 
+  // ref1.1: initialization of trace_bits to store the shared memory addresses (保存共享内存的地址)
   trace_bits = shmat(shm_id, NULL, 0);
+  // new1.1: initialize max_bits here
+  if (max_count_mode) max_bits = (u32 *) (max_bits + MAP_SIZE)
   
   if (trace_bits == (void *)-1) PFATAL("shmat() failed");
 
@@ -2302,7 +2341,11 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
+  // ref1.2: before each execution of the target, memory resets here
   memset(trace_bits, 0, MAP_SIZE);
+  // new1.2: we reset max_bits here
+  if (max_count_mode) memset(max_bits, 0, MAX_SIZE * sizeof(u32));
+
   MEM_BARRIER();
 
   /* If we're running in "dumb" mode, we can't rely on the fork server
@@ -2631,6 +2674,7 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       goto abort_calibration;
     }
 
+    // ref 1.3: part1: this checksum helps to determine whether the mutated inputs has introduced new execution paths.
     cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
     if (q->exec_cksum != cksum) {
@@ -2657,7 +2701,11 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
       } else {
 
+        // ref 1.3: cksum
         q->exec_cksum = cksum;
+        // new 1.3: max_count_cksum
+        if (max_count_mode)
+          q->max_count_cksum = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);
         memcpy(first_trace, trace_bits, MAP_SIZE);
 
       }
