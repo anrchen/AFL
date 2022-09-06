@@ -135,9 +135,11 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
            skip_requested,            /* Skip request, via SIGUSR1        */
            run_over10m,               /* Run time over 10 minutes?        */
            persistent_mode,           /* Running in persistent mode?      */
-           deferred_mode,             /* Deferred forkserver mode?        */
-           max_count_mode,            /* Max counts mode?                 */
-           fast_cal;                  /* Try to calibrate faster?
+           fast_cal;                  /* Try to calibrate faster?         */
+
+/* performancefuzzing */
+EXP_ST u8  deferred_mode,             /* Deferred forkserver mode?        */
+           max_count_mode;            /* Max counts mode?                 */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -155,8 +157,8 @@ EXP_ST u8  virgin_bits[MAP_SIZE],     /* Regions yet untouched by fuzzing */
            virgin_tmout[MAP_SIZE],    /* Bits we haven't seen in tmouts   */
            virgin_crash[MAP_SIZE];    /* Bits we haven't seen in crashes  */
 
+/* performancefuzzing */
 EXP_ST u32* max_bits;                 /* new SHM with instrumentation bitmap  */
-
 EXP_ST u32 max_counts[MAX_SIZE];      /* Bits we haven't seen in maxcount */
 
 static u8  var_bytes[MAP_SIZE];       /* Bytes that appear to be variable */
@@ -278,8 +280,8 @@ static struct queue_entry *queue,     /* Fuzzing queue (linked list)      */
                           *queue_top, /* Top of the list                  */
                           *q_prev100; /* Previous 100 marker              */
 
-static struct queue_entry*
-  top_rated[MAP_SIZE];                /* Top entries for bitmap bytes     */
+/* performancefuzzing */
+static struct queue_entry** top_rated;/* Top entries for bitmap bytes     */
 
 struct extra_data {
   u8* data;                           /* Dictionary token data            */
@@ -875,21 +877,20 @@ void DEBUG (char const *fmt, ...) {
     va_end(ap);
 }
 
+/* performancefuzzing */
 static inline u8 update_max_count(){
   int ret = 0;
   for (int i = 0; i < MAX_SIZE; i++){
       if (unlikely(max_bits[i])){
         if (unlikely(max_bits[i] > max_counts[i])) {
            ret = 1;
-           DEBUG("New max(0x%04x) = %u (earlier was: %u)\n ", i, max_bits[i], max_counts[i]);
-     max_counts[i] = max_bits[i];
+           max_counts[i] = max_bits[i];
         }
       }
   }
   
   return ret;
 }
-
 
 /* Write bitmap to file. The bitmap is useful mostly for the secret
    -B option, to focus a separate fuzzing session on a particular
@@ -1297,18 +1298,38 @@ static void minimize_bits(u8* dst, u8* src) {
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
 
-// 1. maintain a top_rating[] array for each byte set in trace_bits[].
+// 1. maintain a top_rated[] array for each byte set in trace_bits[].
 static void update_bitmap_score(struct queue_entry* q) {
 
   u32 i;
-  u64 fav_factor = q->exec_us * q->len;
 
   /* For every byte set in trace_bits[], see if there is a previous winner,
      and how it compares to us. */
 
+  /* performancefuzzing */
+  if (max_count_mode){
+
+    /* Insert if we achieve the max count */ 
+    for (i = 0; i < MAX_SIZE; i++)
+
+      if (max_bits[i]) {
+
+         if (top_rated[i] && (max_bits[i] < max_counts[i])) continue;
+
+         /* Insert ourselves as the new winner. */
+         top_rated[i] = q;
+         score_changed = 1;
+
+      }
+
+    return;
+  }
+
+  u64 fav_factor = q->exec_us * q->len;
+
   for (i = 0; i < MAP_SIZE; i++)
 
-    if (trace_bits[i]) {
+    if (unlikely(trace_bits[i])) {
 
        if (top_rated[i]) {
 
