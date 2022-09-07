@@ -1298,7 +1298,6 @@ static void minimize_bits(u8* dst, u8* src) {
    for every byte in the bitmap. We win that slot if there is no previous
    contender, or if the contender has a more favorable speed x size factor. */
 
-// 1. maintain a top_rated[] array for each byte set in trace_bits[].
 static void update_bitmap_score(struct queue_entry* q) {
 
   u32 i;
@@ -1373,14 +1372,12 @@ static void update_bitmap_score(struct queue_entry* q) {
 static void cull_queue(void) {
 
   struct queue_entry* q;
-  static u8 temp_v[MAP_SIZE >> 3];
   u32 i;
 
   if (dumb_mode || !score_changed) return;
 
   score_changed = 0;
 
-  memset(temp_v, 255, MAP_SIZE >> 3);
 
   queued_favored  = 0;
   pending_favored = 0;
@@ -1391,6 +1388,34 @@ static void cull_queue(void) {
     q->favored = 0;
     q = q->next;
   }
+
+  /* performancefuzzing */
+  if (max_count_mode){
+    for (i = 0; i < MAX_SIZE; i++) {
+
+      if (top_rated[i]) {
+
+        /* if top rated for any i, will be favored */
+        u8 is_favored = top_rated[i]->favored;
+
+        top_rated[i]->favored = 1;
+
+        /* increments counts only if not also favored for another i */
+        if (!is_favored){
+
+          queued_favored++;
+
+          if (!top_rated[i]->was_fuzzed) pending_favored++;
+        }
+
+      }
+
+    }
+    return;
+  }
+
+  static u8 temp_v[MAP_SIZE >> 3];
+  memset(temp_v, 255, MAP_SIZE >> 3);
 
   /* Let's see if anything in the bitmap isn't captured in temp_v.
      If yes, and if it has a top_rated[] contender, let's use it. */
