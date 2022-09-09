@@ -139,7 +139,7 @@ EXP_ST u8  skip_deterministic,        /* Skip deterministic stages?       */
 
 /* performancefuzzing */
 EXP_ST u8  deferred_mode,             /* Deferred forkserver mode?        */
-           max_count_mode;            /* Max counts mode?                 */
+           pf_mode;                   /* Performancefuzzing mode?         */
 
 static s32 out_fd,                    /* Persistent fd for out_file       */
            dev_urandom_fd = -1,       /* Persistent fd for /dev/urandom   */
@@ -261,7 +261,8 @@ struct queue_entry {
 
   u32 bitmap_size,                    /* Number of bits set in bitmap     */
       exec_cksum,                     /* Checksum of the execution trace  */
-      max_count_cksum;                /* Checksum of the max counts trace */
+  /* performance fuzzing */
+      exec_cksum_pf;                  /* Checksum of the max counts trace */
 
   u64 exec_us,                        /* Execution time (us)              */
       handicap,                       /* Number of queue cycles behind    */
@@ -1306,7 +1307,7 @@ static void update_bitmap_score(struct queue_entry* q) {
      and how it compares to us. */
 
   /* performancefuzzing */
-  if (max_count_mode){
+  if (pf_mode){
 
     /* Insert if we achieve the max count */ 
     for (i = 0; i < MAX_SIZE; i++)
@@ -1390,7 +1391,7 @@ static void cull_queue(void) {
   }
 
   /* performancefuzzing */
-  if (max_count_mode){
+  if (pf_mode){
     for (i = 0; i < MAX_SIZE; i++) {
 
       if (top_rated[i]) {
@@ -1459,7 +1460,8 @@ EXP_ST void setup_shm(void) {
   memset(virgin_tmout, 255, MAP_SIZE);
   memset(virgin_crash, 255, MAP_SIZE);
 
-  shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+  /* performancefuzzing */
+  shm_id = shmget(IPC_PRIVATE, MAP_SIZE + (MAX_SIZE * sizeof(u32)), IPC_CREAT | IPC_EXCL | 0600);
 
   if (shm_id < 0) PFATAL("shmget() failed");
 
@@ -1476,13 +1478,19 @@ EXP_ST void setup_shm(void) {
 
   ck_free(shm_str);
 
-  // ref1.1: initialization of trace_bits to store the shared memory addresses (保存共享内存的地址)
+  /* Initialization of trace_bits to store the shared memory addresses 
+     (保存共享内存的地址) */
   trace_bits = shmat(shm_id, NULL, 0);
-  // new1.1: initialize max_bits here
-  if (max_count_mode) max_bits = (u32 *) (max_bits + MAP_SIZE)
+
+  /* performancefuzzing */ 
+  /* Initialize max_bits here */
+  if (pf_mode) max_bits = (u32 *) (max_bits + MAP_SIZE)
   
   if (trace_bits == (void *)-1) PFATAL("shmat() failed");
 
+  /* performancefuzzing */
+  /* Configure max_counts */
+  memset(max_counts, 0, MAX_SIZE * sizeof(u32));
 }
 
 
@@ -2387,10 +2395,11 @@ static u8 run_target(char** argv, u32 timeout) {
      must prevent any earlier operations from venturing into that
      territory. */
 
-  // ref1.2: before each execution of the target, memory resets here
+  /* Before each execution of the target, memory resets here */
   memset(trace_bits, 0, MAP_SIZE);
-  // new1.2: we reset max_bits here
-  if (max_count_mode) memset(max_bits, 0, MAX_SIZE * sizeof(u32));
+  /* performancefuzzing */
+  /* We reset max_bits here */
+  if (pf_mode) memset(max_bits, 0, MAX_SIZE * sizeof(u32));
 
   MEM_BARRIER();
 
@@ -2553,6 +2562,11 @@ static u8 run_target(char** argv, u32 timeout) {
 #else
   classify_counts((u32*)trace_bits);
 #endif /* ^WORD_SIZE_64 */
+
+  /* performancefuzzing */
+  if (pf_mode && zero_other_counts) {
+    memset(trace_bits + MAP_SIZE + sizeof(u32), 0, sizeof(u32)*(MAX_SIZE -1));
+  }
 
   prev_timed_out = child_timed_out;
 
@@ -2720,7 +2734,8 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
       goto abort_calibration;
     }
 
-    // ref 1.3: part1: this checksum helps to determine whether the mutated inputs has introduced new execution paths.
+    /* This checksum helps to determine whether the mutated inputs has introduced 
+       new execution paths. */
     cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
     if (q->exec_cksum != cksum) {
@@ -2747,11 +2762,11 @@ static u8 calibrate_case(char** argv, struct queue_entry* q, u8* use_mem,
 
       } else {
 
-        // ref 1.3: cksum
+        /* cksum */
         q->exec_cksum = cksum;
-        // new 1.3: max_count_cksum
-        if (max_count_mode)
-          q->max_count_cksum = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);
+        /* exec_cksum_pf */
+        if (pf_mode)
+          q->exec_cksum_pf = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);
         memcpy(first_trace, trace_bits, MAP_SIZE);
 
       }
@@ -2830,7 +2845,6 @@ static void check_map_coverage(void) {
 
 }
 
-
 /* Perform dry run of all test cases to confirm that the app is working as
    expected. This is done only for the initial inputs, and only once. */
 
@@ -2874,6 +2888,9 @@ static void perform_dry_run(char** argv) {
       case FAULT_NONE:
 
         if (q == queue) check_map_coverage();
+
+        /* performancefuzzing */
+        if (pf_mode) update_max_count();
 
         if (crash_mode) FATAL("Test case '%s' does *NOT* crash", fn);
 
@@ -3261,20 +3278,25 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   s32 fd;
   u8  keeping = 0, res;
 
+  /* performancefuzzing */
+  u8  hnm = 0;
+  if (pf_mode) hnm = update_max_count();
+
   if (fault == crash_mode) {
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
-
-    if (!(hnb = has_new_bits(virgin_bits))) {
+    /* performancefuzzing */
+    if (!(hnb = has_new_bits(virgin_bits)) && (!pf_mode || !hnm)) {
       if (crash_mode) total_crashes++;
       return 0;
     }    
 
 #ifndef SIMPLE_FILES
 
-    fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths,
-                      describe_op(hnb));
+    /* performancefuzzing */
+    fn = alloc_printf("%s/queue/id:%06u,%s%s", out_dir, queued_paths,
+                      describe_op(hnb), (pf_mode && hnm) ? ",+max" : "" );
 
 #else
 
@@ -3290,6 +3312,10 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
     }
 
     queue_top->exec_cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
+
+    /* performancefuzzing */
+    if (pf_mode) 
+      queue_top->exec_cksum_pf = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST); 
 
     /* Try to calibrate inline; this also calls update_bitmap_score() when
        successful. */
@@ -4621,6 +4647,8 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
   static u8 tmp[64];
   static u8 clean_trace[MAP_SIZE];
+  /* performancefuzzing */
+  static u32 clean_trace_pf[MAX_SIZE];
 
   u8  needs_write = 0, fault = 0;
   u32 trim_exec = 0;
@@ -4658,6 +4686,8 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       u32 trim_avail = MIN(remove_len, q->len - remove_pos);
       u32 cksum;
+      /* performancefuzzing */
+      u32 exec_cksum_pf;
 
       write_with_gap(in_buf, q->len, remove_pos, trim_avail);
 
@@ -4670,12 +4700,16 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
 
       cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);
 
+      /* performancefuzzing */
+      if (pf_mode)
+        exec_cksum_pf = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);
+
       /* If the deletion had no impact on the trace, make it permanent. This
          isn't perfect for variable-path inputs, but we're just making a
          best-effort pass, so it's not a big deal if we end up with false
          negatives every now and then. */
 
-      if (cksum == q->exec_cksum) {
+      if ((cksum == q->exec_cksum) && (!pf_mode || (exec_cksum_pf == q->exec_cksum_pf))){
 
         u32 move_tail = q->len - remove_pos - trim_avail;
 
@@ -4693,6 +4727,9 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
           needs_write = 1;
           memcpy(clean_trace, trace_bits, MAP_SIZE);
 
+          /* performancefuzzing */
+          if (pf_mode)
+            memcpy(clean_trace_pf, max_bits, MAX_SIZE*sizeof(u32));
         }
 
       } else remove_pos += remove_len;
@@ -4725,6 +4762,10 @@ static u8 trim_case(char** argv, struct queue_entry* q, u8* in_buf) {
     close(fd);
 
     memcpy(trace_bits, clean_trace, MAP_SIZE);
+
+    /* performancefuzzing */
+    if(pf_mode)
+      memcpy(max_bits, clean_trace_pf, MAX_SIZE*sizeof(u32));
     update_bitmap_score(q);
 
   }

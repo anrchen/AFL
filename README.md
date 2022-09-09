@@ -10,14 +10,14 @@ To simplify the afl process, we break down the approach into three core steps as
 ### Step 1: Environment setup
 
 The step contains some important variable initialization.
-#### 1.1 on max\_count\_mode
-`max_count_mode` determines whether to enter performance fuzzing mode (line 139)
+#### 1.1 on pf\_mode
+`pf_mode` determines whether to enter performance fuzzing mode (line 139)
 #### 1.2 on max\_bits
 `max_bits` stores a new bitmap (line 158)
 #### 1.3 on max\_counts
 `max_counts` records the bits we haven't seen in performance fuzzing mode (line 160)
-#### 1.4 on max\_count\_cksum
-`max_count_cksum` records the checksum of the max counts trace (line 262)
+#### 1.4 on exec\_cksum\_pf
+`exec_cksum_pf` records the checksum of the max counts trace (line 262)
 
 #### 1.5 on read\_testcases()
 This function detects test cases from `in_dir` (input directory with test cases), and places them in queue (with consistent ordering) `queued_at_start` with 1.6 `add_to_queue()`. 
@@ -65,7 +65,17 @@ struct queue_entry {
 
 #### 1.7 on setup_shm()
 
-The main feature of AFL is to use the instrumentation feedback from the target binary to assist to the generation of mutated inputs. Specifically, the instrumented target records the branch information during execution, which is later used by the fuzzer to determine the system flow and code coverage.To achieve this feature, AFL passes the `shared_mem[]` array (a shared memory) to the instrumented binary to capture the branch coverage. Then, the fuzzer uses the `trace_bits` variable to record the shared memory addresses. In this trace map, every byte set in the map can be thought of as a hit for a particular tuple `(branch_src, branch_dst)` found in the instrumented code.**1.7** <span style="color:blue">ref</span>:The implementation of this feature first starts in the `setup_shm()` function. We initialize `trace_bits` in the fuzzer with:```trace_bits = shmat(shm_id, NULL, 0);```	<span style="color:crimson">new</span>: Similarly, we initialize max_bits in the fuzzer.```if (max_count_mode) max_bits = (u32 *) (max_bits + MAP_SIZE)```
+The main feature of AFL is to use the instrumentation feedback from the target binary to assist to the generation of mutated inputs. Specifically, the instrumented target records the branch information during execution, which is later used by the fuzzer to determine the system flow and code coverage.To achieve this feature, AFL passes the `shared_mem[]` array (a shared memory) to the instrumented binary to capture the branch coverage. Then, the fuzzer uses the `trace_bits` variable to record the shared memory addresses. In this trace map, every byte set in the map can be thought of as a hit for a particular tuple `(branch_src, branch_dst)` found in the instrumented code.**1.7.1** <span style="color:blue">ref</span>: allocating shared memory
+
+```
+shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0600);
+```
+
+<span style="color:crimson">new</span>: allocating shared memory for MAX_SIZE
+
+```
+shm_id = shmget(IPC_PRIVATE, MAP_SIZE + (MAX_SIZE * sizeof(u32)), IPC_CREAT | IPC_EXCL | 0600);
+```**1.7.2** <span style="color:blue">ref</span>: The implementation of this feature first starts in the `setup_shm()` function. We initialize `trace_bits` in the fuzzer with:```trace_bits = shmat(shm_id, NULL, 0);```	<span style="color:crimson">new</span>: Similarly, we initialize max_bits in the fuzzer.```if (max_count_mode) max_bits = (u32 *) (max_bits + MAP_SIZE)```
  
 ### Step 2: Dry run
 
@@ -81,11 +91,9 @@ This step performs a dry run on the test cases, and any errors are reported to t
 
 #### 2.2 on calibrate_case()
 
-<span style="color:crimson">todo for documentation</span>This function warns users about flaky or problematic test cases early on. In particular, it uses a checksum to determine whether a newly mutated input produces new paths. We then calculate the performance of each test case with `update_bitmap_score`.
+Overall, this function starts up the fork server with `init_forkserver`, calibrates new test cases and invokes `update_bitmap_score` to give an initial score to the bytes. Particularly, it warns users about flaky or problematic test cases early on. It also uses a checksum to determine whether a newly mutated test case produces new paths. We then calculate the performance of each test case with `update_bitmap_score`.
 
-Overall, this function calibrates new test cases and invokes `update_bitmap_score` to give an initial score to the bytes.
-
-**2.2** <span style="color:blue">ref</span>: AFL uses the `calibrate_case` function to verify whether a test case contain problems early on. While doing so, it also checks with cksum (checksum) whether the mutated inputs has introduced new execution paths.
+**2.2** <span style="color:blue">ref</span>: AFL uses the `calibrate_case` function to verify whether a test case contain problems early on. While doing so, it also checks whether the newly mutated test case has introduced new execution paths (with `cksum`).
 ``` u32 cksum = hash32(trace_bits, MAP_SIZE, HASH_CONST);```<span style="color:crimson">new</span>: In our case, we want to perform the similar checksum whenever cksum is true, therefore, we can set our `max_count_cksum` variable in the else branch.
 ```if (max_count_mode)	q->max_count_cksum = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);```
 
@@ -127,6 +135,50 @@ static void update_bitmap_score(struct queue_entry* q) {
     return;
   }
   
+...
+}
+```
+
+#### 2.4 on save\_if\_interesting()
+
+This function saves interesting input seeds into queue. The definition of "interesting" relies on whether the given test case visits a new tuple or the number of time visited changes (by using `has_new_bits`).
+
+**2.4** <span style="color:blue">ref</span>: The initial file name takes the following format.
+
+```
+fn = alloc_printf("%s/queue/id:%06u,%s", out_dir, queued_paths, describe_op(hnb));
+```
+
+<span style="color:crimson">new</span>: We update the file name.
+
+```
+u8  hnm = 0;
+if (max_count_mode)
+	hnm = update_max_count()
+...
+fn = alloc_printf(..., describe_op(hnb), (max_ct_fuzzing && hnm) ? ",+max" : "" );
+...
+if (max_count_mode) 
+	queue_top->max_count_cksum = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST); 
+```
+
+#### 2.5 on perform\_dry\_run()
+
+This function is essentially the driver function for the previously discussed sub-sections (2.1-2.3). At the end of the dry run, `check_map_coverage` function is called to verify the coverage map.
+
+**2.5** <span style="color:blue">ref</span>: `perform_dry_run` function calls `check_map_coverage` if there is no fault (i.e., case `FAULT_NONE`).
+
+```
+perform_dry_run() {
+...
+}
+```
+
+<span style="color:crimson">new</span>: In performancefuzzing mode, we also need to configure `max_counts`.
+
+```
+perform_dry_run() {
+	if (max_count_mode) update_max_count();
 ...
 }
 ```
@@ -229,4 +281,18 @@ static void cull_queue(void) {
 	
 ...
 }
+```
+
+#### 3.3 on trim\_case()
+
+This function performs deletion on the test cases which should not have any impact on the trace.
+
+<span style="color:blue">ref</span>: 
+
+<span style="color:crimson>new</span>: 
+
+```
+u32 exec_cksum_pf;
+if (pf_mode)
+	exec_cksum_pf = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);
 ```
