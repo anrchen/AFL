@@ -5156,13 +5156,13 @@ static u8 fuzz_one(char** argv) {
 
 #else
 
-  if (pending_favored) {
+  if (pending_favored || (pf_mode && queued_favored)) {
 
     /* If we have any favored, non-fuzzed new arrivals in the queue,
        possibly skip to them at the expense of already-fuzzed or non-favored
        cases. */
 
-    if ((queue_cur->was_fuzzed || !queue_cur->favored) &&
+    if (((queue_cur->was_fuzzed && !pf_mode) || !queue_cur->favored) &&
         UR(100) < SKIP_TO_NEW_PROB) return 1;
 
   } else if (!dumb_mode && !queue_cur->favored && queued_paths > 10) {
@@ -5504,6 +5504,8 @@ static u8 fuzz_one(char** argv) {
     if (!eff_map[EFF_APOS(stage_cur)]) {
 
       u32 cksum;
+      /* performancefuzzing */
+      u32 exec_cksum_pf;
 
       /* If in dumb mode or if the file is very short, just flag everything
          without wasting time on checksums. */
@@ -5513,7 +5515,14 @@ static u8 fuzz_one(char** argv) {
       else
         cksum = ~queue_cur->exec_cksum;
 
-      if (cksum != queue_cur->exec_cksum) {
+      /* performancefuzzing */
+      if (pf_mode)
+        if (!dumb_mode && len >= EFF_MIN_LEN)
+          exec_cksum_pf = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);
+        else
+          exec_cksum_pf = ~queue_cur->exec_cksum_pf;
+
+      if ((cksum != queue_cur->exec_cksum) || (pf_mode && (exec_cksum_pf != queue_cur->exec_cksum_pf))) {
         eff_map[EFF_APOS(stage_cur)] = 1;
         eff_cnt++;
       }
@@ -6497,15 +6506,10 @@ havoc_stage:
 
           }
 
-        case 13:
-
-          if (temp_len + HAVOC_BLK_XL < MAX_FILE) {
-
-            /* Clone bytes (75%) or insert a block of constant bytes (25%). */
+        case 13: {
 
             u8  actually_clone = UR(4);
             u32 clone_from, clone_to, clone_len;
-            u8* new_buf;
 
             if (actually_clone) {
 
@@ -6519,8 +6523,11 @@ havoc_stage:
 
             }
 
+            if (temp_len + clone_len >= MAX_FILE) break;
+
             clone_to   = UR(temp_len);
 
+            u8* new_buf;
             new_buf = ck_alloc_nozero(temp_len + clone_len);
 
             /* Head */
@@ -6543,9 +6550,9 @@ havoc_stage:
             out_buf = new_buf;
             temp_len += clone_len;
 
-          }
+            break;
 
-          break;
+          }
 
         case 14: {
 
@@ -7265,7 +7272,8 @@ static void usage(u8* argv0) {
 
        "  -d            - quick & dirty mode (skips deterministic steps)\n"
        "  -n            - fuzz without instrumentation (dumb mode)\n"
-       "  -x dir        - optional fuzzer dictionary (see README)\n\n"
+       "  -x dir        - optional fuzzer dictionary (see README)\n"
+       "  -p            - performancefuzzing settings\n\n"
 
        "Other stuff:\n\n"
 
@@ -7930,9 +7938,15 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+i:o:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
+  while ((opt = getopt(argc, argv, "+pi:o:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
 
     switch (opt) {
+
+      /* performancefuzzing */
+      case 'p':
+        SAYF("performancefuzzing\n");
+        pf_mode = 1;
+        break;
 
       case 'i': /* input dir */
 
@@ -8177,6 +8191,14 @@ int main(int argc, char** argv) {
 
   setup_post();
   setup_shm();
+
+  /* performancefuzzing */
+  if (pf_mode) 
+    memset(max_counts, 0, MAX_SIZE * sizeof(u32));
+    top_rated= ck_alloc(MAX_SIZE * sizeof(struct queue_entry *));
+  else
+    top_rated = ck_alloc(MAP_SIZE * sizeof(struct queue_entry *));
+  
   init_count_class16();
 
   setup_dirs_fds();
@@ -8318,6 +8340,10 @@ stop_fuzzing:
   fclose(plot_file);
   destroy_queue();
   destroy_extras();
+
+  /* performancefuzzing */
+  ck_free(top_rated);
+
   ck_free(target_path);
   ck_free(sync_id);
 

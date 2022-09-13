@@ -287,12 +287,50 @@ static void cull_queue(void) {
 
 This function performs deletion on the test cases which should not have any impact on the trace.
 
-<span style="color:blue">ref</span>: 
-
-<span style="color:crimson>new</span>: 
+<span style="color:crimson">new</span>:
 
 ```
 u32 exec_cksum_pf;
 if (pf_mode)
 	exec_cksum_pf = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);
+```
+
+#### 3.4 on fuzz\_one()
+
+This function fuzzes a given entry. In case where the entry is fuzzed (i.e., `was_fuzzed`), we skip it to run the non-fuzzed new arrivals.
+
+<span style="color:crimson">new</span>: We do not skip fuzzed queue entries in performance fuzzing.
+
+```
+if (pending_favored || (pf_mode && queued_favored)) {
+	if (((queue_cur->was_fuzzed && !pf_mode) || !queue_cur->favored) && ...) return 1;
+```
+
+#### 3.5 usage()
+
+<span style="color:crimson">new</span>: New option -p for performancefuzzing
+
+```
+"  -p            - performancefuzzing settings\n\n"
+```
+
+#### 3.6 main()
+
+This is the driver function.
+
+<span style="color:crimson">new</span>: New option -p
+
+```
+case 'p':
+	SAYF("performancefuzzing\n");
+	pf_mode = 1;
+	break;
+```
+
+<span style="color:crimson">new</span>: configure `max_counts` and run ck_alloc on `top_rated`.
+
+```
+if (pf_mode) 
+	memset(max_counts, 0, MAX_SIZE * sizeof(u32));
+	top_rated= ck_alloc(MAX_SIZE * sizeof(struct queue_entry *));
 ```
