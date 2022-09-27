@@ -37,7 +37,7 @@ CXXFLAGS    += -Wall -D_FORTIFY_SOURCE=2 -g -Wno-pointer-sign \
                -DVERSION=\"$(VERSION)\" -Wno-variadic-macros
 
 # Mark nodelete to work around unload bug in upstream LLVM 5.0+
-CLANG_CFL    = `$(LLVM_CONFIG) --cxxflags` -Wl,-znodelete -fno-rtti -fpic $(CXXFLAGS)
+CLANG_CFL    = `$(LLVM_CONFIG) --cxxflags` -fno-rtti -fpic $(CXXFLAGS)
 CLANG_LFL    = `$(LLVM_CONFIG) --ldflags` $(LDFLAGS)
 
 # User teor2345 reports that this is required to make things work on MacOS X.
@@ -56,7 +56,7 @@ ifeq "$(origin CC)" "default"
 endif
 
 ifndef AFL_TRACE_PC
-  PROGS      = ../afl-clang-fast ../afl-llvm-pass.so ../afl-llvm-rt.o ../afl-llvm-rt-32.o ../afl-llvm-rt-64.o
+  PROGS      = ../afl-clang-fast ../afl-llvm-pass.so ../afl-catch-dlclose.so ../afl-llvm-rt.o ../afl-llvm-rt-32.o ../afl-llvm-rt-64.o
 else
   PROGS      = ../afl-clang-fast ../afl-llvm-rt.o ../afl-llvm-rt-32.o ../afl-llvm-rt-64.o
 endif
@@ -82,6 +82,9 @@ endif
 
 ../afl-llvm-pass.so: afl-llvm-pass.so.cc | test_deps
 	$(CXX) $(CLANG_CFL) -shared $< -o $@ $(CLANG_LFL)
+
+../afl-catch-dlclose.so: afl-catch-dlclose.so.c | test_deps
+	$(CC) $(CFLAGS) -fPIC -shared $< -o $@
 
 ../afl-llvm-rt.o: afl-llvm-rt.o.c | test_deps
 	$(CC) $(CFLAGS) -fPIC -c $< -o $@

@@ -39,7 +39,6 @@
 
 #include "config.h"
 #include "types.h"
-#include "debug.h"
 #include "alloc-inl.h"
 #include "hash.h"
 
@@ -864,20 +863,6 @@ EXP_ST void destroy_queue(void) {
 
 }
 
-void DEBUG (char const *fmt, ...) {
-    static FILE *f = NULL;
-    if (f == NULL) {
-      // dynamic memory allocation 
-      u8 * fn = alloc_printf("%s/max-ct-fuzzing.log", out_dir);
-      f= fopen(fn, "w");
-      ck_free(fn);
-    }
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(f, fmt, ap);
-    va_end(ap);
-}
-
 /* performancefuzzing */
 static inline u8 update_max_count(){
   int ret = 0;
@@ -1484,7 +1469,7 @@ EXP_ST void setup_shm(void) {
 
   /* performancefuzzing */ 
   /* Initialize max_bits here */
-  if (pf_mode) max_bits = (u32 *) (max_bits + MAP_SIZE)
+  if (pf_mode) max_bits = (u32 *) (max_bits + MAP_SIZE);
   
   if (trace_bits == (void *)-1) PFATAL("shmat() failed");
 
@@ -2564,7 +2549,7 @@ static u8 run_target(char** argv, u32 timeout) {
 #endif /* ^WORD_SIZE_64 */
 
   /* performancefuzzing */
-  if (pf_mode && zero_other_counts) {
+  if (pf_mode) {
     memset(trace_bits + MAP_SIZE + sizeof(u32), 0, sizeof(u32)*(MAX_SIZE -1));
   }
 
@@ -5516,11 +5501,12 @@ static u8 fuzz_one(char** argv) {
         cksum = ~queue_cur->exec_cksum;
 
       /* performancefuzzing */
-      if (pf_mode)
+      if (pf_mode) {
         if (!dumb_mode && len >= EFF_MIN_LEN)
           exec_cksum_pf = hash32(max_bits, MAX_SIZE*sizeof(u32), HASH_CONST);
         else
           exec_cksum_pf = ~queue_cur->exec_cksum_pf;
+      }
 
       if ((cksum != queue_cur->exec_cksum) || (pf_mode && (exec_cksum_pf != queue_cur->exec_cksum_pf))) {
         eff_map[EFF_APOS(stage_cur)] = 1;
@@ -8193,11 +8179,12 @@ int main(int argc, char** argv) {
   setup_shm();
 
   /* performancefuzzing */
-  if (pf_mode) 
+  if (pf_mode) {
     memset(max_counts, 0, MAX_SIZE * sizeof(u32));
     top_rated= ck_alloc(MAX_SIZE * sizeof(struct queue_entry *));
-  else
+  } else {
     top_rated = ck_alloc(MAP_SIZE * sizeof(struct queue_entry *));
+  }
   
   init_count_class16();
 
