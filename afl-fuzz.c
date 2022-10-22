@@ -41,6 +41,7 @@
 #include "types.h"
 #include "alloc-inl.h"
 #include "hash.h"
+#include "debug.h"
 
 #include <stdio.h>
 #include <unistd.h>
@@ -55,6 +56,7 @@
 #include <termios.h>
 #include <dlfcn.h>
 #include <sched.h>
+#include <stdarg.h>
 
 #include <sys/wait.h>
 #include <sys/time.h>
@@ -344,6 +346,18 @@ enum {
   /* 05 */ FAULT_NOBITS
 };
 
+void LOGME (char const *fmt, ...) {
+    static FILE *f = NULL;
+    if (f == NULL) {
+      u8 * fn = alloc_printf("%s/execution.log", out_dir);
+      f= fopen(fn, "w");
+      ck_free(fn);
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+}
 
 /* Get unix time in milliseconds */
 
@@ -870,6 +884,7 @@ static inline u8 update_max_count(){
       if (unlikely(max_bits[i])){
         if (unlikely(max_bits[i] > max_counts[i])) {
            ret = 1;
+           LOGME("New max(0x%04x) = %u (earlier was: %u)\n ", i, max_bits[i], max_counts[i]);
            max_counts[i] = max_bits[i];
         }
       }
@@ -1397,32 +1412,32 @@ static void cull_queue(void) {
       }
 
     }
-    return;
+  } else {
+
+    static u8 temp_v[MAP_SIZE >> 3];
+    memset(temp_v, 255, MAP_SIZE >> 3);
+
+    /* Let's see if anything in the bitmap isn't captured in temp_v.
+       If yes, and if it has a top_rated[] contender, let's use it. */
+
+    for (i = 0; i < MAP_SIZE; i++)
+      if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
+
+        u32 j = MAP_SIZE >> 3;
+
+        /* Remove all bits belonging to the current entry from temp_v. */
+
+        while (j--) 
+          if (top_rated[i]->trace_mini[j])
+            temp_v[j] &= ~top_rated[i]->trace_mini[j];
+
+        top_rated[i]->favored = 1;
+        queued_favored++;
+
+        if (!top_rated[i]->was_fuzzed) pending_favored++;
+
+      }
   }
-
-  static u8 temp_v[MAP_SIZE >> 3];
-  memset(temp_v, 255, MAP_SIZE >> 3);
-
-  /* Let's see if anything in the bitmap isn't captured in temp_v.
-     If yes, and if it has a top_rated[] contender, let's use it. */
-
-  for (i = 0; i < MAP_SIZE; i++)
-    if (top_rated[i] && (temp_v[i >> 3] & (1 << (i & 7)))) {
-
-      u32 j = MAP_SIZE >> 3;
-
-      /* Remove all bits belonging to the current entry from temp_v. */
-
-      while (j--) 
-        if (top_rated[i]->trace_mini[j])
-          temp_v[j] &= ~top_rated[i]->trace_mini[j];
-
-      top_rated[i]->favored = 1;
-      queued_favored++;
-
-      if (!top_rated[i]->was_fuzzed) pending_favored++;
-
-    }
 
   q = queue;
 
@@ -3035,6 +3050,15 @@ static void perform_dry_run(char** argv) {
 
   OKF("All test cases processed.");
 
+  if (pf_mode) {
+    LOGME("======== Starting Keys ========\n");
+    for (u32 k=0; k < MAX_SIZE; k++){
+      // if there is a non-zero score at this index.. 
+      if (max_counts[k]){
+          LOGME("At key %d, val is %d\n", k, max_counts[k]);
+      }
+    }
+  }
 }
 
 
@@ -3263,11 +3287,11 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
   s32 fd;
   u8  keeping = 0, res;
 
-  /* performancefuzzing */
-  u8  hnm = 0;
-  if (pf_mode) hnm = update_max_count();
-
   if (fault == crash_mode) {
+
+    /* performancefuzzing */
+    u8  hnm = 0;
+    if (pf_mode) hnm = update_max_count();
 
     /* Keep only if there are new bits in the map, add to queue for
        future fuzzing, etc. */
@@ -3289,6 +3313,7 @@ static u8 save_if_interesting(char** argv, void* mem, u32 len, u8 fault) {
 
 #endif /* ^!SIMPLE_FILES */
 
+    LOGME("adding %s to queue\n", fn);
     add_to_queue(fn, len, 0);
 
     if (hnb == 2) {
@@ -5169,6 +5194,8 @@ static u8 fuzz_one(char** argv) {
   }
 
 #endif /* ^IGNORE_FINDS */
+
+  LOGME("======== Fuzzing test case #%u ========\n", current_entry);
 
   if (not_on_tty) {
     ACTF("Fuzzing test case #%u (%u total, %llu uniq crashes found)...",
@@ -7924,7 +7951,7 @@ int main(int argc, char** argv) {
   gettimeofday(&tv, &tz);
   srandom(tv.tv_sec ^ tv.tv_usec ^ getpid());
 
-  while ((opt = getopt(argc, argv, "+pi:o:f:m:b:t:T:dnCB:S:M:x:QV")) > 0)
+  while ((opt = getopt(argc, argv, "+pi:o:f:m:b:t:T:dnCB:S:M:x:Q")) > 0)
 
     switch (opt) {
 
@@ -8109,11 +8136,6 @@ int main(int argc, char** argv) {
         if (!mem_limit_given) mem_limit = MEM_LIMIT_QEMU;
 
         break;
-
-      case 'V': /* Show version number */
-
-        /* Version number has been printed already, just quit. */
-        exit(0);
 
       default:
 

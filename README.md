@@ -1,4 +1,31 @@
-This readme serves as a guide to users of this refactored AFL version.# Refactoring logs## afl-fuzz.c**detailed refactoring**
+# Usage
+
+1. compile afl with `make` at root directory. 
+
+For missing headers error, set up the llvm path configurations, e.g.,:
+
+```
+LLVM_PATH="/path/to/llvm_pre-built/llvm-4.0.1"
+LLVM_VERSION="4.0.1"
+export PATH="$LLVM_PATH:$PATH"
+// by setting SDKROOT, we no longer need to set up the -isysroot flag.
+export SDKROOT=$(xcrun --sdk macosx --show-sdk-path)
+export LD_LIBRARY_PATH="$LLVM_PATH/lib/:$LD_LIBRARY_PATH"
+export DYLD_LIBRARY_PATH="$LLVM_PATH/lib/:$DYLD_LIBRARY_PATH"
+export CPATH="$LLVM_PATH/lib/clang/$LLVM_VERSION/include/"
+export LDFLAGS="-L$LLVM_PATH/lib"
+export CPPFLAGS="-I$LLVM_PATH/include"
+export CC="$LLVM_PATH/bin/clang"
+export CXX="$LLVM_PATH/bin/clang++"
+```
+
+2. compile afl in `llvm` mode with `make`
+
+3. compile the tested program
+
+4. run afl-fuzz on the tested program
+
+# Refactoring logs## afl-fuzz.c**detailed refactoring**
 
 To simplify the afl process, we break down the approach into three core steps as follow:
 
