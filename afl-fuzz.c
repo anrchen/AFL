@@ -1484,13 +1484,10 @@ EXP_ST void setup_shm(void) {
 
   /* performancefuzzing */ 
   /* Initialize max_bits here */
-  if (pf_mode) max_bits = (u32 *) (max_bits + MAP_SIZE);
+  if (pf_mode) max_bits = (u32 *) (trace_bits + MAP_SIZE);
   
-  if (trace_bits == (void *)-1) PFATAL("shmat() failed");
+  if (!trace_bits) PFATAL("shmat() failed");
 
-  /* performancefuzzing */
-  /* Configure max_counts */
-  memset(max_counts, 0, MAX_SIZE * sizeof(u32));
 }
 
 
@@ -2562,11 +2559,6 @@ static u8 run_target(char** argv, u32 timeout) {
 #else
   classify_counts((u32*)trace_bits);
 #endif /* ^WORD_SIZE_64 */
-
-  /* performancefuzzing */
-  if (pf_mode) {
-    memset(trace_bits + MAP_SIZE + sizeof(u32), 0, sizeof(u32)*(MAX_SIZE -1));
-  }
 
   prev_timed_out = child_timed_out;
 
@@ -5156,6 +5148,9 @@ static u8 fuzz_one(char** argv) {
 
   u8  a_collect[MAX_AUTO_EXTRA];
   u32 a_len = 0;
+
+  u32 orig_max_counts[MAX_SIZE];
+  memcpy(orig_max_counts, max_counts, MAX_SIZE*sizeof(u32));
 
 #ifdef IGNORE_FINDS
 
