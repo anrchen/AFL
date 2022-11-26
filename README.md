@@ -4,9 +4,8 @@ The performance fuzzer is designed to identify performance hot spots. This fuzze
 
 See [Refactoring Logs](docs/RecfactoringLogs.md) if you want to understand the implementation details. In section [](), we also present an overall on the core implementation.
 
-===
+
 ## Installation & Fuzzing
----
 
 Here is a general installation guide on the fuzzer. You should also check out our cheatsheet that summarizes the overall workflow of the fuzzer. The steps are the following:
 
@@ -75,9 +74,8 @@ See [Workflow](#workflow) for more details on how afl-fuzz is implemented.
 </p>
 
 
-===
+
 ## <a name="workflow"></a>Workflow
----
 
 Below, we summarize in form of cheatsheet the core components that are essential for understanding the workflow in `afl-fuzz`.
 
